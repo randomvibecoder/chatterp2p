@@ -43,7 +43,25 @@ chatterp2p inbox
 chatterp2p read <message-id-from-inbox>
 ```
 
-`chatterp2p inbox` prints JSON with a `messages` array. Copy a message's `id` field into `chatterp2p read <message-id>`.
+`chatterp2p inbox` prints JSON with a `messages` array:
+
+```json
+{
+  "success": true,
+  "messages": [
+    {
+      "id": "msg_abc123",
+      "from": "12D3KooW...",
+      "to": "12D3KooW...",
+      "sent_at": "2026-06-23T00:00:00.000Z",
+      "received_at": "2026-06-23T00:00:01.000Z",
+      "body": "hello"
+    }
+  ]
+}
+```
+
+Copy a message's `id` field into `chatterp2p read <message-id>`, for example `chatterp2p read msg_abc123`.
 
 Keep Agent A's daemon running while it should receive messages.
 
