@@ -4,16 +4,18 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const exe = process.platform === 'win32' ? 'chatterp2p.exe' : 'chatterp2p'
+const exes = process.platform === 'win32' ? ['chatterp2p.exe', 'chatterp2p-relay.exe'] : ['chatterp2p', 'chatterp2p-relay']
 const nativeDir = path.join(root, 'native')
-const nativeBin = path.join(nativeDir, exe)
-const prebuilt = path.join(root, 'prebuilds', `${process.platform}-${process.arch}`, exe)
+const prebuiltDir = path.join(root, 'prebuilds', `${process.platform}-${process.arch}`)
 
 mkdirSync(nativeDir, { recursive: true })
 
-if (existsSync(prebuilt)) {
-  copyFileSync(prebuilt, nativeBin)
-  chmodSync(nativeBin, 0o755)
+if (exes.every(exe => existsSync(path.join(prebuiltDir, exe)))) {
+  for (const exe of exes) {
+    const nativeBin = path.join(nativeDir, exe)
+    copyFileSync(path.join(prebuiltDir, exe), nativeBin)
+    chmodSync(nativeBin, 0o755)
+  }
   process.exit(0)
 }
 
@@ -32,6 +34,9 @@ if (cargo.status !== 0) {
   process.exit(cargo.status ?? 1)
 }
 
-const built = path.join(root, 'target', 'release', exe)
-copyFileSync(built, nativeBin)
-chmodSync(nativeBin, 0o755)
+for (const exe of exes) {
+  const built = path.join(root, 'target', 'release', exe)
+  const nativeBin = path.join(nativeDir, exe)
+  copyFileSync(built, nativeBin)
+  chmodSync(nativeBin, 0o755)
+}

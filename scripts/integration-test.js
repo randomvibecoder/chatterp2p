@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict'
-import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { spawn, spawnSync } from 'node:child_process'
+import { closeSync, existsSync, mkdtempSync, openSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path from 'node:path'
 
 const root = path.resolve(path.dirname(new URL(import.meta.url).pathname), '..')
 const bin = path.join(root, 'target', 'debug', process.platform === 'win32' ? 'chatterp2p.exe' : 'chatterp2p')
+const relayBin = path.join(root, 'target', 'debug', process.platform === 'win32' ? 'chatterp2p-relay.exe' : 'chatterp2p-relay')
 
 function runRaw (agent, args, options = {}) {
   return spawnSync(bin, args, {
@@ -54,8 +55,47 @@ function waitForCard (agent) {
   throw new Error(`daemon did not advertise addresses\n${readFileSync(path.join(agent.data, 'daemon.log'), 'utf8')}`)
 }
 
+function waitForRelayedCard (agent) {
+  for (let i = 0; i < 120; i++) {
+    const card = waitForCard(agent)
+    if (card.multiaddrs?.some(addr => addr.includes('/p2p-circuit/'))) return card
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 150)
+  }
+  throw new Error(`daemon did not advertise relayed address\n${readFileSync(path.join(agent.data, 'daemon.log'), 'utf8')}`)
+}
+
+function parseJsonObjects (raw) {
+  const values = []
+  let acc = ''
+  for (const line of raw.split('\n')) {
+    if (line.trim() === '' && acc === '') continue
+    acc += `${line}\n`
+    try {
+      values.push(JSON.parse(acc))
+      acc = ''
+    } catch {}
+  }
+  return values
+}
+
+function waitForRelayAddress (logFile) {
+  for (let i = 0; i < 120; i++) {
+    if (existsSync(logFile)) {
+      const parsed = parseJsonObjects(readFileSync(logFile, 'utf8'))
+      const started = parsed.find(value => value.success === true && value.mode === 'relay' && value.addresses?.length > 0)
+      if (started) return started.addresses[0]
+    }
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100)
+  }
+  throw new Error(`relay did not advertise address\n${existsSync(logFile) ? readFileSync(logFile, 'utf8') : ''}`)
+}
+
 const a = agent('a')
 const b = agent('b')
+const relayRoot = mkdtempSync(path.join(tmpdir(), 'chatterp2p-relay-'))
+const relayLog = path.join(relayRoot, 'relay.log')
+let relay = null
+let relayFd = null
 
 try {
   const help = runRaw(a, ['--help'])
@@ -116,8 +156,88 @@ try {
 
   const status = runJson(b, ['daemon', 'status'])
   assert.equal(status.running, false)
+
+  relayFd = openSync(relayLog, 'a')
+  relay = spawn(relayBin, ['--listen', '/ip4/127.0.0.1/tcp/0/ws', '--identity', path.join(relayRoot, 'identity.json')], {
+    cwd: root,
+    stdio: ['ignore', relayFd, relayFd]
+  })
+  const relayAddr = waitForRelayAddress(relayLog)
+
+  let c = null
+  let d = null
+  let e = null
+  try {
+    c = agent('c')
+    d = agent('d')
+    e = agent('e')
+    const cInit = runJson(c, ['init'])
+    const dInit = runJson(d, ['init'])
+    const eInit = runJson(e, ['init'])
+    runJson(c, ['daemon', 'start', '--listen', '/ip4/127.0.0.1/tcp/0/ws', '--relay', relayAddr])
+    runJson(d, ['daemon', 'start', '--listen', '/ip4/127.0.0.1/tcp/0/ws', '--relay', relayAddr])
+    runJson(e, ['daemon', 'start', '--listen', '/ip4/127.0.0.1/tcp/0/ws', '--relay', relayAddr])
+
+    const cCard = waitForRelayedCard(c)
+    const dCard = waitForRelayedCard(d)
+    const eCard = waitForRelayedCard(e)
+    const cRelayed = cCard.multiaddrs.find(addr => addr.includes('/p2p-circuit/'))
+    const dRelayed = dCard.multiaddrs.find(addr => addr.includes('/p2p-circuit/'))
+    const eRelayed = eCard.multiaddrs.find(addr => addr.includes('/p2p-circuit/'))
+    assert.ok(cRelayed)
+    assert.ok(dRelayed)
+    assert.ok(eRelayed)
+
+    runJson(c, ['peer', 'add', dInit.peer_id, 'dana', dRelayed])
+    runJson(d, ['peer', 'add', cInit.peer_id, 'casey', cRelayed])
+    runJson(c, ['peer', 'add', eInit.peer_id, 'elliot', eRelayed])
+    runJson(d, ['peer', 'add', eInit.peer_id, 'elliot', eRelayed])
+    runJson(e, ['peer', 'add', cInit.peer_id, 'casey', cRelayed])
+    runJson(e, ['peer', 'add', dInit.peer_id, 'dana', dRelayed])
+
+    const cToD = runJson(c, ['message', 'dana', 'hello-over-relay'])
+    assert.match(cToD.dialed, /p2p-circuit/)
+
+    const dToC = runJson(d, ['message', 'casey', 'reply-over-relay'])
+    assert.match(dToC.dialed, /p2p-circuit/)
+
+    const cToE = runJson(c, ['message', 'elliot', 'c-to-e-over-relay'])
+    assert.match(cToE.dialed, /p2p-circuit/)
+
+    const eToD = runJson(e, ['message', 'dana', 'e-to-d-over-relay'])
+    assert.match(eToD.dialed, /p2p-circuit/)
+
+    const dToE = runJson(d, ['message', 'elliot', 'd-to-e-over-relay'])
+    assert.match(dToE.dialed, /p2p-circuit/)
+
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 500)
+    const dInbox = runJson(d, ['inbox'])
+    const cInbox = runJson(c, ['inbox'])
+    const eInbox = runJson(e, ['inbox'])
+    assert.ok(dInbox.messages.some(message => message.body === 'hello-over-relay'))
+    assert.ok(dInbox.messages.some(message => message.body === 'e-to-d-over-relay'))
+    assert.ok(cInbox.messages.some(message => message.body === 'reply-over-relay'))
+    assert.ok(eInbox.messages.some(message => message.body === 'c-to-e-over-relay'))
+    assert.ok(eInbox.messages.some(message => message.body === 'd-to-e-over-relay'))
+  } finally {
+    if (c != null) {
+      runRaw(c, ['daemon', 'stop'])
+      rmSync(c.dir, { recursive: true, force: true })
+    }
+    if (d != null) {
+      runRaw(d, ['daemon', 'stop'])
+      rmSync(d.dir, { recursive: true, force: true })
+    }
+    if (e != null) {
+      runRaw(e, ['daemon', 'stop'])
+      rmSync(e.dir, { recursive: true, force: true })
+    }
+  }
 } finally {
   runRaw(b, ['daemon', 'stop'])
+  if (relay != null && relay.exitCode == null) relay.kill('SIGTERM')
+  if (relayFd != null) closeSync(relayFd)
   rmSync(a.dir, { recursive: true, force: true })
   rmSync(b.dir, { recursive: true, force: true })
+  rmSync(relayRoot, { recursive: true, force: true })
 }

@@ -9,6 +9,10 @@ description = "Local-first libp2p DMs for agents"
 name = "chatterp2p"
 path = "rust/main.rs"
 
+[[bin]]
+name = "chatterp2p-relay"
+path = "rust/relay.rs"
+
 [profile.release]
 codegen-units = 1
 lto = "thin"

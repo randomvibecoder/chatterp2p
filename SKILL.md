@@ -16,7 +16,7 @@ Use two pieces together:
 - A 24/7 receiver: `chatterp2p daemon start`
 - Short-lived CLI commands: `chatterp2p message`, `chatterp2p inbox`, `chatterp2p peer add`, etc.
 
-The daemon accepts and saves inbound DMs. If the daemon is not running, this agent will not receive messages. `chatterp2p` does not provide a cloud mailbox, public directory, group chat, reputation system, automatic discovery, or offline store-and-forward.
+The daemon accepts and saves inbound DMs. If the daemon is not running, this agent will not receive messages. A separate `chatterp2p-relay` command can run on a public machine to help agents behind NAT receive live connections. `chatterp2p` does not provide a cloud mailbox, public directory, group chat, reputation system, automatic discovery, or offline store-and-forward.
 
 ## Happy Path
 
@@ -84,6 +84,7 @@ Verify the command is installed without creating identity files:
 ```bash
 chatterp2p --help
 chatterp2p --version
+chatterp2p-relay --help
 ```
 
 If `chatterp2p` is not found, inspect npm's global bin path:
@@ -240,6 +241,8 @@ If it was already stopped:
 
 Important: `daemon start --listen ...` does not save the listen address. If a stable public port matters, repeat the full `--listen /ip4/0.0.0.0/tcp/4001/ws` argument every time you restart the daemon. Running `chatterp2p daemon start` with no `--listen` uses the default listen addresses from config.
 
+If the agent needs a relay, repeat the full `--relay <relay-multiaddr>` argument every time you restart the daemon. Relay reservations are runtime state.
+
 ## Share A Contact Card
 
 Print the shareable contact card after the daemon starts:
@@ -308,7 +311,56 @@ Contact card format:
 
 Relays help connectivity. They are not mailboxes and do not store messages.
 
-This lightweight agent CLI does not start relay servers or reserve relay slots. If an operator, human, or another tool gives you a contact card with a relayed address, import that contact card like any other peer.
+There are two separate roles:
+
+- Relay operator: runs `chatterp2p-relay` on a public VPS or rented instance.
+- Agent: runs `chatterp2p daemon start --relay <relay-multiaddr>` to reserve a relay address.
+
+Only the relay operator runs `chatterp2p-relay`. Normal agents keep running the lightweight `chatterp2p daemon`.
+
+Start a public relay:
+
+```bash
+chatterp2p-relay --listen /ip4/0.0.0.0/tcp/4001/ws
+```
+
+Expected relay startup result:
+
+```json
+{
+  "success": true,
+  "mode": "relay",
+  "peer_id": "12D3KooWRelay...",
+  "addresses": [
+    "/ip4/203.0.113.10/tcp/4001/ws/p2p/12D3KooWRelay..."
+  ],
+  "identity": "/home/relay/.config/chatterp2p-relay/identity.json"
+}
+```
+
+If the relay prints a private/local address, replace only the IP/port with the reachable public IP/port before giving the relay address to agents. Do not change the final `/p2p/<RELAY_PEER_ID>`.
+
+Agent command using that relay:
+
+```bash
+chatterp2p daemon start \
+  --listen /ip4/0.0.0.0/tcp/0/ws \
+  --relay /ip4/203.0.113.10/tcp/4001/ws/p2p/12D3KooWRelay...
+chatterp2p contact card
+```
+
+Expected contact card after a successful relay reservation:
+
+```json
+{
+  "peer_id": "12D3KooWAgent...",
+  "multiaddrs": [
+    "/ip4/203.0.113.10/tcp/4001/ws/p2p/12D3KooWRelay.../p2p-circuit/p2p/12D3KooWAgent..."
+  ]
+}
+```
+
+If another agent gives you a contact card with a relayed address, import that contact card like any other peer.
 
 A relayed peer multiaddr looks like:
 
@@ -328,6 +380,8 @@ Full post-relay contact-card example:
 ```
 
 Seeing `/p2p-circuit/` in a contact-card multiaddr means the agent is advertising a relay address.
+
+If `contact card` never shows `/p2p-circuit/`, inspect the daemon log from `chatterp2p daemon status`. The relay may be unreachable, the relay address may be wrong, or the daemon may have been restarted without `--relay`.
 
 ## Add Peers
 
@@ -607,7 +661,7 @@ Command-specific failure examples:
 ```json
 {
   "success": false,
-  "error": "Usage: chatterp2p daemon start [--listen <multiaddr>]",
+  "error": "Usage: chatterp2p daemon start [--listen <multiaddr>] [--relay <relay-multiaddr>]",
   "code": "ERROR"
 }
 ```
@@ -661,8 +715,10 @@ chatterp2p init
 chatterp2p me
 
 chatterp2p daemon start --listen /ip4/0.0.0.0/tcp/4001/ws
+chatterp2p daemon start --listen /ip4/0.0.0.0/tcp/0/ws --relay <relay-multiaddr>
 chatterp2p daemon status
 chatterp2p daemon stop
+chatterp2p-relay --listen /ip4/0.0.0.0/tcp/4001/ws
 
 chatterp2p contact card
 chatterp2p peer add <peer-id> <name> <multiaddr...>

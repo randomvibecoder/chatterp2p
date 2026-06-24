@@ -1,11 +1,9 @@
-use anyhow::{anyhow, bail, Context, Result};
-use base64::{engine::general_purpose::STANDARD as B64, Engine as _};
+use anyhow::{Context, Result, anyhow, bail};
+use base64::{Engine as _, engine::general_purpose::STANDARD as B64};
 use futures::StreamExt;
 use libp2p::{
-    core::Multiaddr,
-    identify, identity,
-    multiaddr::Protocol,
-    noise, relay, request_response, swarm::StreamProtocol, swarm::SwarmEvent, yamux, PeerId, Swarm, SwarmBuilder,
+    PeerId, Swarm, SwarmBuilder, core::Multiaddr, identify, identity, multiaddr::Protocol, noise,
+    relay, request_response, swarm::StreamProtocol, swarm::SwarmEvent, yamux,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -93,10 +91,18 @@ struct MessageFile {
     body: String,
 }
 
+struct DaemonOptions {
+    listen: Vec<String>,
+    relays: Vec<String>,
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     if let Err(err) = run().await {
-        eprintln!("{}", json!({ "success": false, "error": err.to_string(), "code": "ERROR" }));
+        eprintln!(
+            "{}",
+            json!({ "success": false, "error": err.to_string(), "code": "ERROR" })
+        );
         std::process::exit(1);
     }
 }
@@ -136,7 +142,9 @@ async fn run() -> Result<()> {
         }
         Some("peer") => run_peer(&args[1..]).await,
         Some("message") => {
-            let name = args.get(1).context("Usage: chatterp2p message <name-or-peer-id> <message>")?;
+            let name = args
+                .get(1)
+                .context("Usage: chatterp2p message <name-or-peer-id> <message>")?;
             let body = args[2..].join(" ");
             if body.is_empty() {
                 bail!("Usage: chatterp2p message <name-or-peer-id> <message>");
@@ -152,7 +160,9 @@ async fn run() -> Result<()> {
         }
         Some("read") => {
             let id = args.get(1).context("Usage: chatterp2p read <message-id>")?;
-            let msg = list_messages()?.into_iter().find(|m| &m.id == id)
+            let msg = list_messages()?
+                .into_iter()
+                .find(|m| &m.id == id)
                 .ok_or_else(|| anyhow!("Message not found: {id}"))?;
             ok(json!({ "message": msg }));
             Ok(())
@@ -161,10 +171,13 @@ async fn run() -> Result<()> {
         Some("contact") if args.get(1).map(String::as_str) == Some("card") => {
             let (peer_id, _) = load_identity()?;
             let addrs = read_daemon_info().unwrap_or_default();
-            println!("{}", serde_json::to_string_pretty(&json!({
-                "peer_id": peer_id.to_string(),
-                "multiaddrs": addrs
-            }))?);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&json!({
+                    "peer_id": peer_id.to_string(),
+                    "multiaddrs": addrs
+                }))?
+            );
             Ok(())
         }
         _ => bail!("Usage: chatterp2p <init|me|contact|peer|message|inbox|read|daemon>"),
@@ -174,8 +187,12 @@ async fn run() -> Result<()> {
 async fn run_peer(args: &[String]) -> Result<()> {
     match args.first().map(String::as_str) {
         Some("add") => {
-            let peer_id = args.get(1).context("Usage: chatterp2p peer add <peer-id> <name> <multiaddr...>")?;
-            let name = args.get(2).context("Usage: chatterp2p peer add <peer-id> <name> <multiaddr...>")?;
+            let peer_id = args
+                .get(1)
+                .context("Usage: chatterp2p peer add <peer-id> <name> <multiaddr...>")?;
+            let name = args
+                .get(2)
+                .context("Usage: chatterp2p peer add <peer-id> <name> <multiaddr...>")?;
             if args.len() < 4 {
                 bail!("Usage: chatterp2p peer add <peer-id> <name> <multiaddr...>");
             }
@@ -187,7 +204,9 @@ async fn run_peer(args: &[String]) -> Result<()> {
             Ok(())
         }
         Some("rm") => {
-            let name = args.get(1).context("Usage: chatterp2p peer rm <name-or-peer-id>")?;
+            let name = args
+                .get(1)
+                .context("Usage: chatterp2p peer rm <name-or-peer-id>")?;
             ok(json!({ "removed": remove_peer(name)? }));
             Ok(())
         }
@@ -196,13 +215,17 @@ async fn run_peer(args: &[String]) -> Result<()> {
             Ok(())
         }
         Some("show") => {
-            let name = args.get(1).context("Usage: chatterp2p peer show <name-or-peer-id>")?;
+            let name = args
+                .get(1)
+                .context("Usage: chatterp2p peer show <name-or-peer-id>")?;
             let peer = find_peer(name)?.ok_or_else(|| anyhow!("Unknown peer: {name}"))?;
             ok(json!({ "peer": peer }));
             Ok(())
         }
         Some("import") => {
-            let name = args.get(1).context("Usage: chatterp2p peer import <name> <json-or-file>")?;
+            let name = args
+                .get(1)
+                .context("Usage: chatterp2p peer import <name> <json-or-file>")?;
             let input = args[2..].join(" ");
             if input.is_empty() {
                 bail!("Usage: chatterp2p peer import <name> <json-or-file>");
@@ -217,7 +240,7 @@ async fn run_peer(args: &[String]) -> Result<()> {
 async fn run_daemon(args: &[String]) -> Result<()> {
     match args.first().map(String::as_str) {
         Some("start") => {
-            parse_listen_args(&args[1..])?;
+            parse_daemon_args(&args[1..])?;
             let status = daemon_status();
             if status["running"] == true {
                 ok(status);
@@ -226,7 +249,10 @@ async fn run_daemon(args: &[String]) -> Result<()> {
             ensure_dirs()?;
             let exe = env::current_exe()?;
             let log_path = daemon_log_path();
-            let log = fs::OpenOptions::new().create(true).append(true).open(&log_path)?;
+            let log = fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(&log_path)?;
             let mut child_args = vec!["--daemon-child".to_string()];
             child_args.extend_from_slice(&args[1..]);
             let child = Command::new(exe)
@@ -252,7 +278,10 @@ async fn run_daemon(args: &[String]) -> Result<()> {
             let pid = status["pid"].as_u64().unwrap();
             #[cfg(unix)]
             {
-                let _ = Command::new("kill").arg("-TERM").arg(pid.to_string()).status();
+                let _ = Command::new("kill")
+                    .arg("-TERM")
+                    .arg(pid.to_string())
+                    .status();
             }
             let _ = fs::remove_file(daemon_pid_path());
             ok(json!({ "stopped": true, "pid": pid }));
@@ -263,13 +292,36 @@ async fn run_daemon(args: &[String]) -> Result<()> {
 }
 
 async fn run_receiver(args: &[String]) -> Result<()> {
-    let listen = parse_listen_args(args)?;
+    let opts = parse_daemon_args(args)?;
     let (peer_id, keypair) = load_or_create_identity()?;
     let mut swarm = build_swarm(keypair).await?;
 
     let cfg = load_config()?;
-    for addr in listen.iter().chain(cfg.listen.iter()).take(if listen.is_empty() { usize::MAX } else { listen.len() }) {
+    for addr in opts
+        .listen
+        .iter()
+        .chain(cfg.listen.iter())
+        .take(if opts.listen.is_empty() {
+            usize::MAX
+        } else {
+            opts.listen.len()
+        })
+    {
         Swarm::listen_on(&mut swarm, addr.parse()?)?;
+    }
+    for relay in &opts.relays {
+        let addr: Multiaddr = relay.parse()?;
+        let circuit = addr.with(Protocol::P2pCircuit);
+        match Swarm::listen_on(&mut swarm, circuit.clone()) {
+            Ok(_) => println!(
+                "{}",
+                json!({ "event": "relay_listen_started", "address": circuit.to_string() })
+            ),
+            Err(err) => println!(
+                "{}",
+                json!({ "event": "relay_listen_start_error", "address": circuit.to_string(), "error": err.to_string() })
+            ),
+        }
     }
 
     loop {
@@ -309,7 +361,12 @@ async fn run_receiver(args: &[String]) -> Result<()> {
                     SwarmEvent::ConnectionEstablished { peer_id: connected_peer, endpoint, .. } => {
                         println!("{}", json!({ "event": "connection_established", "peer_id": connected_peer.to_string(), "endpoint": format!("{endpoint:?}") }));
                     }
-                    SwarmEvent::Behaviour(BehaviourEvent::Relay(_event)) => {}
+                    SwarmEvent::ExternalAddrConfirmed { address } => {
+                        println!("{}", json!({ "event": "external_addr_confirmed", "address": append_p2p(address, peer_id).to_string() }));
+                    }
+                    SwarmEvent::Behaviour(BehaviourEvent::Relay(event)) => {
+                        println!("{}", json!({ "event": "relay_client", "detail": format!("{event:?}") }));
+                    }
                     SwarmEvent::Behaviour(BehaviourEvent::Dm(request_response::Event::Message { peer, message, .. })) => {
                         if let request_response::Message::Request { request, channel, .. } = message {
                             if !request.body.is_empty() {
@@ -368,7 +425,9 @@ async fn send_message(peer: PeerEntry, body: String) -> Result<serde_json::Value
             Err(err) => last_err = Some(err.to_string()),
         }
     }
-    let request_id = pending.ok_or_else(|| anyhow!(last_err.unwrap_or_else(|| "No dial attempts were made.".to_string())))?;
+    let request_id = pending.ok_or_else(|| {
+        anyhow!(last_err.unwrap_or_else(|| "No dial attempts were made.".to_string()))
+    })?;
 
     let deadline = tokio::time::sleep(Duration::from_secs(10));
     tokio::pin!(deadline);
@@ -396,11 +455,20 @@ async fn build_swarm(keypair: identity::Keypair) -> Result<Swarm<Behaviour>> {
         .await?
         .with_relay_client(noise::Config::new, yamux::Config::default)?
         .with_behaviour(move |key, relay_behaviour| {
-            let protocols = std::iter::once((StreamProtocol::new(DM_PROTOCOL), request_response::ProtocolSupport::Full));
+            let protocols = std::iter::once((
+                StreamProtocol::new(DM_PROTOCOL),
+                request_response::ProtocolSupport::Full,
+            ));
             Behaviour {
-                identify: identify::Behaviour::new(identify::Config::new("chatterp2p/0.0.1".to_string(), key.public())),
+                identify: identify::Behaviour::new(identify::Config::new(
+                    "chatterp2p/0.0.1".to_string(),
+                    key.public(),
+                )),
                 relay: relay_behaviour,
-                dm: request_response::json::Behaviour::new(protocols, request_response::Config::default()),
+                dm: request_response::json::Behaviour::new(
+                    protocols,
+                    request_response::Config::default(),
+                ),
             }
         })?
         .build();
@@ -408,22 +476,28 @@ async fn build_swarm(keypair: identity::Keypair) -> Result<Swarm<Behaviour>> {
     Ok(swarm)
 }
 
-fn parse_listen_args(args: &[String]) -> Result<Vec<String>> {
+fn parse_daemon_args(args: &[String]) -> Result<DaemonOptions> {
     let mut listen = Vec::new();
+    let mut relays = Vec::new();
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "--listen" => {
                 i += 1;
-                let addr = args.get(i).context("Usage: chatterp2p daemon start [--listen <multiaddr>]")?;
+                let addr = args.get(i).context("Usage: chatterp2p daemon start [--listen <multiaddr>] [--relay <relay-multiaddr>]")?;
                 listen.push(addr.clone());
+            }
+            "--relay" => {
+                i += 1;
+                let addr = args.get(i).context("Usage: chatterp2p daemon start [--listen <multiaddr>] [--relay <relay-multiaddr>]")?;
+                relays.push(addr.clone());
             }
             arg if arg.starts_with("--") => bail!("Unknown option: {arg}"),
             arg => bail!("Unknown argument: {arg}"),
         }
         i += 1;
     }
-    Ok(listen)
+    Ok(DaemonOptions { listen, relays })
 }
 
 fn ok(value: serde_json::Value) {
@@ -432,7 +506,10 @@ fn ok(value: serde_json::Value) {
     if let serde_json::Value::Object(obj) = value {
         map.extend(obj);
     }
-    println!("{}", serde_json::to_string_pretty(&serde_json::Value::Object(map)).unwrap());
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&serde_json::Value::Object(map)).unwrap()
+    );
 }
 
 fn config_dir() -> PathBuf {
@@ -450,15 +527,29 @@ fn data_dir() -> PathBuf {
 }
 
 fn home_dir() -> PathBuf {
-    env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."))
+    env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
-fn identity_path() -> PathBuf { config_dir().join("identity.json") }
-fn config_path() -> PathBuf { config_dir().join("config.json") }
-fn peers_path() -> PathBuf { config_dir().join("peers.json") }
-fn messages_path() -> PathBuf { data_dir().join("messages.jsonl") }
-fn daemon_pid_path() -> PathBuf { data_dir().join("daemon.pid") }
-fn daemon_log_path() -> PathBuf { data_dir().join("daemon.log") }
+fn identity_path() -> PathBuf {
+    config_dir().join("identity.json")
+}
+fn config_path() -> PathBuf {
+    config_dir().join("config.json")
+}
+fn peers_path() -> PathBuf {
+    config_dir().join("peers.json")
+}
+fn messages_path() -> PathBuf {
+    data_dir().join("messages.jsonl")
+}
+fn daemon_pid_path() -> PathBuf {
+    data_dir().join("daemon.pid")
+}
+fn daemon_log_path() -> PathBuf {
+    data_dir().join("daemon.log")
+}
 
 fn ensure_dirs() -> Result<()> {
     fs::create_dir_all(config_dir())?;
@@ -488,12 +579,15 @@ fn load_or_create_identity() -> Result<(PeerId, identity::Keypair)> {
     let key = identity::Keypair::generate_ed25519();
     let peer_id = PeerId::from(key.public());
     let encoded = B64.encode(key.to_protobuf_encoding()?);
-    write_json(&identity_path(), &IdentityFile {
-        kind: "Ed25519".to_string(),
-        private_key_protobuf_base64: encoded,
-        peer_id: peer_id.to_string(),
-        created_at: now_iso(),
-    })?;
+    write_json(
+        &identity_path(),
+        &IdentityFile {
+            kind: "Ed25519".to_string(),
+            private_key_protobuf_base64: encoded,
+            peer_id: peer_id.to_string(),
+            created_at: now_iso(),
+        },
+    )?;
     let _ = load_config()?;
     let _ = load_peers()?;
     Ok((peer_id, key))
@@ -519,7 +613,9 @@ fn load_config() -> Result<ConfigFile> {
     Ok(cfg)
 }
 
-fn save_config(cfg: &ConfigFile) -> Result<()> { write_json(&config_path(), cfg) }
+fn save_config(cfg: &ConfigFile) -> Result<()> {
+    write_json(&config_path(), cfg)
+}
 
 fn load_peers() -> Result<PeerBook> {
     if let Some(book) = read_json(&peers_path())? {
@@ -530,7 +626,9 @@ fn load_peers() -> Result<PeerBook> {
     Ok(book)
 }
 
-fn save_peers(book: &PeerBook) -> Result<()> { write_json(&peers_path(), book) }
+fn save_peers(book: &PeerBook) -> Result<()> {
+    write_json(&peers_path(), book)
+}
 
 fn add_peer(peer_id_text: &str, name: &str, addr: &str) -> Result<PeerEntry> {
     let peer_id: PeerId = peer_id_text.parse()?;
@@ -539,11 +637,19 @@ fn add_peer(peer_id_text: &str, name: &str, addr: &str) -> Result<PeerEntry> {
     }
     let _: Multiaddr = addr.parse()?;
     let mut book = load_peers()?;
-    if book.peers.iter().any(|p| p.name == name && p.peer_id != peer_id.to_string()) {
+    if book
+        .peers
+        .iter()
+        .any(|p| p.name == name && p.peer_id != peer_id.to_string())
+    {
         bail!("Peer name already exists for a different Peer ID: {name}");
     }
     let now = now_iso();
-    if let Some(existing) = book.peers.iter_mut().find(|p| p.peer_id == peer_id.to_string() || p.name == name) {
+    if let Some(existing) = book
+        .peers
+        .iter_mut()
+        .find(|p| p.peer_id == peer_id.to_string() || p.name == name)
+    {
         existing.peer_id = peer_id.to_string();
         existing.name = name.to_string();
         if !existing.addresses.iter().any(|a| a == addr) {
@@ -559,7 +665,12 @@ fn add_peer(peer_id_text: &str, name: &str, addr: &str) -> Result<PeerEntry> {
             updated_at: now,
         });
     }
-    let peer = book.peers.iter().find(|p| p.peer_id == peer_id.to_string()).unwrap().clone();
+    let peer = book
+        .peers
+        .iter()
+        .find(|p| p.peer_id == peer_id.to_string())
+        .unwrap()
+        .clone();
     save_peers(&book)?;
     Ok(peer)
 }
@@ -567,14 +678,18 @@ fn add_peer(peer_id_text: &str, name: &str, addr: &str) -> Result<PeerEntry> {
 fn remove_peer(name_or_peer_id: &str) -> Result<usize> {
     let mut book = load_peers()?;
     let before = book.peers.len();
-    book.peers.retain(|p| p.name != name_or_peer_id && p.peer_id != name_or_peer_id);
+    book.peers
+        .retain(|p| p.name != name_or_peer_id && p.peer_id != name_or_peer_id);
     let removed = before - book.peers.len();
     save_peers(&book)?;
     Ok(removed)
 }
 
 fn find_peer(name_or_peer_id: &str) -> Result<Option<PeerEntry>> {
-    Ok(load_peers()?.peers.into_iter().find(|p| p.name == name_or_peer_id || p.peer_id == name_or_peer_id))
+    Ok(load_peers()?
+        .peers
+        .into_iter()
+        .find(|p| p.name == name_or_peer_id || p.peer_id == name_or_peer_id))
 }
 
 fn import_peer_contact(input: &str, local_name: &str) -> Result<PeerEntry> {
@@ -587,7 +702,9 @@ fn import_peer_contact(input: &str, local_name: &str) -> Result<PeerEntry> {
     let card_value = value.get("chatterp2p").unwrap_or(&value).clone();
     let card: ContactCard = serde_json::from_value(card_value)?;
     let mut addrs = Vec::new();
-    if let Some(addr) = card.multiaddr { addrs.push(addr); }
+    if let Some(addr) = card.multiaddr {
+        addrs.push(addr);
+    }
     addrs.extend(card.multiaddrs);
     addrs.extend(card.direct_addresses);
     addrs.extend(card.relay_addresses);
@@ -604,19 +721,28 @@ fn import_peer_contact(input: &str, local_name: &str) -> Result<PeerEntry> {
 fn valid_name(name: &str) -> bool {
     !name.is_empty()
         && name.len() <= 64
-        && name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+        && name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
 }
 
 fn append_message(message: &MessageFile) -> Result<()> {
     ensure_dirs()?;
-    let mut f = fs::OpenOptions::new().create(true).append(true).open(messages_path())?;
+    let mut f = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(messages_path())?;
     writeln!(f, "{}", serde_json::to_string(message)?)?;
     Ok(())
 }
 
 fn list_messages() -> Result<Vec<MessageFile>> {
     match fs::read_to_string(messages_path()) {
-        Ok(raw) => raw.lines().filter(|l| !l.trim().is_empty()).map(|l| Ok(serde_json::from_str(l)?)).collect(),
+        Ok(raw) => raw
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| Ok(serde_json::from_str(l)?))
+            .collect(),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(vec![]),
         Err(err) => Err(err.into()),
     }
@@ -630,7 +756,12 @@ fn daemon_status() -> serde_json::Value {
         return json!({ "running": false });
     };
     #[cfg(unix)]
-    let running = Command::new("kill").arg("-0").arg(pid.to_string()).status().map(|s| s.success()).unwrap_or(false);
+    let running = Command::new("kill")
+        .arg("-0")
+        .arg(pid.to_string())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
     #[cfg(not(unix))]
     let running = true;
     if running {
@@ -653,7 +784,12 @@ fn read_daemon_info() -> Result<Vec<String>> {
         if let Ok(value) = serde_json::from_str::<serde_json::Value>(&acc) {
             if value.get("success") == Some(&serde_json::Value::Bool(true)) {
                 if let Some(addrs) = value.get("addresses").and_then(|v| v.as_array()) {
-                    latest = Some(addrs.iter().filter_map(|v| v.as_str().map(ToString::to_string)).collect());
+                    latest = Some(
+                        addrs
+                            .iter()
+                            .filter_map(|v| v.as_str().map(ToString::to_string))
+                            .collect(),
+                    );
                 }
             }
             acc.clear();
@@ -681,12 +817,18 @@ fn normalize_addr_for_peer(addr: &str, peer_id: PeerId) -> Result<String> {
 }
 
 fn message_id() -> String {
-    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
     format!("msg_{:x}", nanos)
 }
 
 fn now_iso() -> String {
-    let secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
     let days = (secs / 86_400) as i64;
     let sec_of_day = secs % 86_400;
     let (year, month, day) = civil_from_days(days);
@@ -711,7 +853,8 @@ fn civil_from_days(days_since_epoch: i64) -> (i64, u32, u32) {
 }
 
 fn print_usage() {
-    println!(r#"chatterp2p {VERSION}
+    println!(
+        r#"chatterp2p {VERSION}
 
 Usage:
   chatterp2p --help
@@ -727,7 +870,8 @@ Usage:
   chatterp2p message <name-or-peer-id> <message>
   chatterp2p inbox
   chatterp2p read <message-id>
-  chatterp2p daemon start [--listen <multiaddr>]
+  chatterp2p daemon start [--listen <multiaddr>] [--relay <relay-multiaddr>]
   chatterp2p daemon status
-  chatterp2p daemon stop"#);
+  chatterp2p daemon stop"#
+    );
 }

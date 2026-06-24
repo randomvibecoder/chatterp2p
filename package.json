@@ -14,7 +14,8 @@
     "SKILL.md"
   ],
   "bin": {
-    "chatterp2p": "./bin/chatterp2p.js"
+    "chatterp2p": "./bin/chatterp2p.js",
+    "chatterp2p-relay": "./bin/chatterp2p-relay.js"
   },
   "scripts": {
     "postinstall": "node scripts/install.js",
